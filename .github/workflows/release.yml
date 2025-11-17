@@ -1,0 +1,244 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'        # Official releases (e.g., v1.0.0)
+      - 'v*.*.*-alpha*' # Alpha releases (e.g., v1.0.0-alpha.1)
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install cross-compilation dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            sudo apt-get install -y musl-tools
+          fi
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
+      
+      - name: Install cross-compilation dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+            rustup target add x86_64-apple-darwin
+          fi
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            rustup target add aarch64-apple-darwin
+          fi
+      
+      - name: Install cross-compilation dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-pc-windows-msvc" ]; then
+            rustup target add aarch64-pc-windows-msvc
+          fi
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+      
+      - name: Build release binary
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+      
+      - name: Determine binary name
+        id: binary_name
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            echo "name=connect-util.exe" >> $GITHUB_OUTPUT
+          else
+            echo "name=connect-util" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Determine archive name
+        id: archive_name
+        shell: bash
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          TARGET=${{ matrix.target }}
+          
+          if [[ "$TARGET" == *"windows"* ]]; then
+            ARCHIVE_NAME="connect-util-${TAG_NAME}-${TARGET}.zip"
+            echo "name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+            echo "format=zip" >> $GITHUB_OUTPUT
+          else
+            ARCHIVE_NAME="connect-util-${TAG_NAME}-${TARGET}.tar.gz"
+            echo "name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+            echo "format=tar.gz" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create archive (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ steps.archive_name.outputs.name }} ${{ steps.binary_name.outputs.name }}
+          cd ../../../
+      
+      - name: Create archive (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Push-Location "target/${{ matrix.target }}/release"
+          Compress-Archive -Path "${{ steps.binary_name.outputs.name }}" -DestinationPath "../../../${{ steps.archive_name.outputs.name }}" -Force
+          Pop-Location
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.archive_name.outputs.name }}
+          retention-days: 90
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Determine release type
+        id: release_type
+        shell: bash
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          if [[ "$TAG_NAME" == *"-alpha"* ]]; then
+            echo "type=alpha" >> $GITHUB_OUTPUT
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "type=official" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+          echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+      
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG_NAME#v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+      
+      - name: Generate release notes
+        id: release_notes
+        shell: bash
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=${{ steps.version.outputs.version }}
+          
+          if [[ "${{ steps.release_type.outputs.type }}" == "alpha" ]]; then
+            NOTES="## Alpha Release ${VERSION}
+          
+          This is an alpha release. Use with caution.
+          
+          ### Installation
+          
+          Download the appropriate binary for your platform:
+          
+          - **Linux (x86_64)**: \`connect-util-${TAG_NAME}-x86_64-unknown-linux-gnu.tar.gz\`
+          - **Linux (ARM64)**: \`connect-util-${TAG_NAME}-aarch64-unknown-linux-gnu.tar.gz\`
+          - **macOS (Intel)**: \`connect-util-${TAG_NAME}-x86_64-apple-darwin.tar.gz\`
+          - **macOS (Apple Silicon)**: \`connect-util-${TAG_NAME}-aarch64-apple-darwin.tar.gz\`
+          - **Windows (x86_64)**: \`connect-util-${TAG_NAME}-x86_64-pc-windows-msvc.zip\`
+          - **Windows (ARM64)**: \`connect-util-${TAG_NAME}-aarch64-pc-windows-msvc.zip\`
+          
+          ### Checksums
+          
+          SHA256 checksums are available for all binaries."
+          else
+            NOTES="## Release ${VERSION}
+          
+          ### Installation
+          
+          Download the appropriate binary for your platform:
+          
+          - **Linux (x86_64)**: \`connect-util-${TAG_NAME}-x86_64-unknown-linux-gnu.tar.gz\`
+          - **Linux (ARM64)**: \`connect-util-${TAG_NAME}-aarch64-unknown-linux-gnu.tar.gz\`
+          - **macOS (Intel)**: \`connect-util-${TAG_NAME}-x86_64-apple-darwin.tar.gz\`
+          - **macOS (Apple Silicon)**: \`connect-util-${TAG_NAME}-aarch64-apple-darwin.tar.gz\`
+          - **Windows (x86_64)**: \`connect-util-${TAG_NAME}-x86_64-pc-windows-msvc.zip\`
+          - **Windows (ARM64)**: \`connect-util-${TAG_NAME}-aarch64-pc-windows-msvc.zip\`
+          
+          ### Checksums
+          
+          SHA256 checksums are available for all binaries."
+          fi
+          
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) | while read file; do
+            sha256sum "$file" >> checksums.txt
+          done
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_type.outputs.tag }}
+          name: Release ${{ steps.version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.notes }}
+          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/checksums.txt
+          draft: false
+          generate_release_notes: false
+
