@@ -98,10 +98,11 @@ jobs:
         run: cargo tarpaulin --out Xml --output-dir coverage
       
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/cobertura.xml
-          fail_ci_if_error: false
+          fail_ci_if_error: true
       
       - name: Generate HTML coverage report
         run: cargo tarpaulin --out Html --output-dir coverage
