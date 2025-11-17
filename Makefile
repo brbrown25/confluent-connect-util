@@ -65,5 +65,12 @@ clean: ## Clean build artifacts
 install-tools: ## Install development tools (cargo-tarpaulin, cargo-watch)
 	$(CARGO) install cargo-tarpaulin cargo-watch
 
+install-targets: ## Install Rust targets for cross-compilation
+	@echo "Installing Rust targets for cross-compilation..."
+	rustup target add x86_64-unknown-linux-musl
+	rustup target add aarch64-unknown-linux-gnu
+	@echo "✅ Targets installed. Note: For cross-compilation from macOS, consider using 'cross' tool."
+	@echo "   Install with: cargo install cross --git https://github.com/cross-rs/cross"
+
 ci: fmt-check lint test ## Run all CI checks (format, lint, test)
 

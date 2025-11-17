@@ -50,6 +50,10 @@ jobs:
             sudo apt-get install -y gcc-aarch64-linux-gnu
           fi
       
+      - name: Install Rust targets
+        run: |
+          rustup target add ${{ matrix.target }}
+      
       - name: Install cross-compilation dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
